@@ -1,0 +1,46 @@
+---
+- name: Collect and save Linux telemetry
+  hosts: linux_targets
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    - name: Ensure patch agent directory exists
+      ansible.builtin.file:
+        path: /opt/linux-patch-agent
+        state: directory
+        mode: '0755'
+
+    - name: Copy telemetry collector
+      ansible.builtin.copy:
+        src: ../telemetry/collector.py
+        dest: /opt/linux-patch-agent/collector.py
+        mode: '0755'
+
+    - name: Copy systemd service inventory helper
+      ansible.builtin.copy:
+        src: ../telemetry/service_inventory.py
+        dest: /opt/linux-patch-agent/service_inventory.py
+        mode: '0644'
+
+    - name: Run telemetry collector
+      ansible.builtin.command:
+        cmd: python3 /opt/linux-patch-agent/collector.py
+      register: telemetry_result
+      changed_when: false
+
+    - name: Save telemetry snapshot
+      ansible.builtin.copy:
+        content: "{{ telemetry_result.stdout }}"
+        dest: "/opt/linux-patch-agent/telemetry.json"
+        mode: '0644'
+
+    - name: Read saved telemetry
+      ansible.builtin.slurp:
+        src: /opt/linux-patch-agent/telemetry.json
+      register: saved_telemetry
+
+    - name: Display saved telemetry
+      ansible.builtin.debug:
+        msg: "{{ saved_telemetry.content | b64decode }}"

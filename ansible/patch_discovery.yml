@@ -1,0 +1,41 @@
+---
+- name: Discover available patches on the selected Linux server
+  hosts: patch_targets
+  become: true
+  gather_facts: false
+
+  vars:
+    discovery_script: /tmp/linux-patching-discover.py
+    discovery_result: "/tmp/linux-patching-discovery-{{ inventory_hostname }}.json"
+
+  tasks:
+    - name: Refresh APT metadata when stale
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Copy patch discovery script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../patching/discover.py"
+        dest: "{{ discovery_script }}"
+        mode: "0700"
+
+    - name: Discover upgradeable packages on the server
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ discovery_script }}"
+      register: discovery_output
+      changed_when: false
+
+    - name: Write discovery output on the server
+      ansible.builtin.copy:
+        content: "{{ discovery_output.stdout }}"
+        dest: "{{ discovery_result }}"
+        mode: "0600"
+
+    - name: Fetch discovery output to the master
+      ansible.builtin.fetch:
+        src: "{{ discovery_result }}"
+        dest: "{{ patch_discovery_output_dir }}/"
+        flat: true

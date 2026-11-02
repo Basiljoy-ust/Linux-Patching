@@ -1,0 +1,53 @@
+---
+- name: Discover Linux system
+  hosts: linux_targets
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    - name: Collect installed package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Get hostname
+      ansible.builtin.command: hostname
+      register: hostname_result
+      changed_when: false
+
+    - name: Get kernel version
+      ansible.builtin.command: uname -r
+      register: kernel_result
+      changed_when: false
+
+    - name: Get failed services
+      ansible.builtin.command:
+        cmd: systemctl --failed --no-legend
+      register: failed_services
+      changed_when: false
+
+    - name: Get upgradeable packages
+      ansible.builtin.shell:
+        cmd: apt list --upgradable 2>/dev/null | tail -n +2
+      register: upgradeable_packages
+      changed_when: false
+
+    - name: Display system information
+      ansible.builtin.debug:
+        msg:
+          hostname: "{{ hostname_result.stdout }}"
+          kernel: "{{ kernel_result.stdout }}"
+          os: "{{ ansible_distribution }}"
+          os_version: "{{ ansible_distribution_version }}"
+          architecture: "{{ ansible_architecture }}"
+          cpu_count: "{{ ansible_processor_vcpus }}"
+          memory_mb: "{{ ansible_memtotal_mb }}"
+          failed_services: "{{ failed_services.stdout_lines }}"
+
+    - name: Display package count
+      ansible.builtin.debug:
+        msg: "Installed packages: {{ ansible_facts.packages | length }}"
+
+    - name: Display upgradeable packages
+      ansible.builtin.debug:
+        var: upgradeable_packages.stdout_lines

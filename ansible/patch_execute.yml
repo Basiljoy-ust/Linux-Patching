@@ -1,0 +1,79 @@
+---
+- name: Execute Linux patching
+  hosts: patch_targets
+  become: true
+  gather_facts: true
+
+  vars:
+    patch_packages: []
+
+  tasks:
+
+    - name: Validate package list
+      ansible.builtin.assert:
+        that:
+          - patch_packages | length > 0
+        fail_msg: "No packages were provided for patching"
+
+    - name: Capture pre-patch kernel
+      ansible.builtin.command:
+        cmd: uname -r
+      register: pre_patch_kernel
+      changed_when: false
+
+    - name: Capture pre-patch uptime
+      ansible.builtin.command:
+        cmd: uptime
+      register: pre_patch_uptime
+      changed_when: false
+
+    - name: Capture pre-patch failed services
+      ansible.builtin.command:
+        cmd: systemctl --failed --no-legend
+      register: pre_patch_failed_services
+      changed_when: false
+
+    - name: Refresh APT metadata
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Upgrade selected packages
+      ansible.builtin.apt:
+        name: "{{ patch_packages }}"
+        state: latest
+      register: patch_result
+
+    - name: Check reboot requirement
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Capture post-patch kernel
+      ansible.builtin.command:
+        cmd: uname -r
+      register: post_patch_kernel
+      changed_when: false
+
+    - name: Capture post-patch uptime
+      ansible.builtin.command:
+        cmd: uptime
+      register: post_patch_uptime
+      changed_when: false
+
+    - name: Capture post-patch failed services
+      ansible.builtin.command:
+        cmd: systemctl --failed --no-legend
+      register: post_patch_failed_services
+      changed_when: false
+
+    - name: Display patch result
+      ansible.builtin.debug:
+        msg:
+          packages: "{{ patch_packages }}"
+          changed: "{{ patch_result.changed }}"
+          kernel_before: "{{ pre_patch_kernel.stdout }}"
+          kernel_after: "{{ post_patch_kernel.stdout }}"
+          reboot_required: "{{ reboot_required.stat.exists }}"
+          failed_services_before: "{{ pre_patch_failed_services.stdout_lines }}"
+          failed_services_after: "{{ post_patch_failed_services.stdout_lines }}"

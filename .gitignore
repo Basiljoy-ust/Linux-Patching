@@ -1,0 +1,2 @@
+/ansible/host_vars/*/vault.yml
+/logs/api.log*

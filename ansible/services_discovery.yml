@@ -1,0 +1,35 @@
+---
+- name: Discover all running services on the selected Linux server
+  hosts: patch_targets
+  gather_facts: false
+
+  vars:
+    service_inventory_script: /tmp/linux-patching-service-inventory.py
+    service_inventory_result: "/tmp/linux-patching-services-{{ inventory_hostname }}.json"
+
+  tasks:
+    - name: Copy systemd service inventory helper
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../telemetry/service_inventory.py"
+        dest: "{{ service_inventory_script }}"
+        mode: "0700"
+
+    - name: Discover running services
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ service_inventory_script }}"
+      register: service_inventory
+      changed_when: false
+
+    - name: Write service inventory on the server
+      ansible.builtin.copy:
+        content: "{{ service_inventory.stdout }}"
+        dest: "{{ service_inventory_result }}"
+        mode: "0600"
+
+    - name: Fetch service inventory to the master
+      ansible.builtin.fetch:
+        src: "{{ service_inventory_result }}"
+        dest: "{{ service_inventory_output_dir }}/"
+        flat: true

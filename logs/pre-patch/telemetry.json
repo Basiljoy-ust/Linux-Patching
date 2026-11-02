@@ -1,0 +1,59 @@
+{
+  "timestamp": "2026-08-24T14:35:59.069958+00:00",
+  "hostname": "Linux-patching1",
+  "cpu": {
+    "usage_percent": 0.0,
+    "vcpus": 1
+  },
+  "memory": {
+    "total_mb": 1849.59,
+    "available_mb": 1294.19,
+    "used_mb": 555.4,
+    "usage_percent": 30.03
+  },
+  "load": {
+    "1m": 0.0,
+    "5m": 0.0,
+    "15m": 0.04
+  },
+  "disk": {
+    "mount": "/",
+    "total_gb": 28.02,
+    "used_gb": 2.75,
+    "free_gb": 25.26,
+    "usage_percent": 9.8
+  },
+  "network": {
+    "lo": {
+      "rx_bytes": 52744,
+      "rx_packets": 368,
+      "rx_errors": 0,
+      "tx_bytes": 52744,
+      "tx_packets": 368,
+      "tx_errors": 0
+    },
+    "eth0": {
+      "rx_bytes": 229927816,
+      "rx_packets": 184593,
+      "rx_errors": 0,
+      "tx_bytes": 10951474,
+      "tx_packets": 60301,
+      "tx_errors": 0
+    }
+  },
+  "services": {
+    "ssh.service": {
+      "status": "active",
+      "enabled": "disabled"
+    },
+    "systemd-journald.service": {
+      "status": "active",
+      "enabled": "static"
+    }
+  },
+  "logs": {
+    "errors": 1,
+    "critical": 1,
+    "kernel_errors": 1
+  }
+}

@@ -1,0 +1,513 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from database import get_connection
+
+import json
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+app = FastAPI(
+    title="Linux Patching API",
+    version="1.0.0",
+)
+
+    
+class PatchRequest(BaseModel):
+    packages: list[str] = Field(
+        min_length=1,
+        max_length=50,
+        description="Package names to patch"
+    )
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PATCH_DISCOVERY = BASE_DIR / "patching" / "discover.py"
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "healthy"
+    }
+
+
+@app.get("/api/assets")
+def get_assets():
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    hostname,
+                    ip_address,
+                    username,
+                    os,
+                    os_version,
+                    kernel_version,
+                    status,
+                    created_at,
+                    updated_at
+                FROM assets
+                ORDER BY created_at DESC
+                """
+            )
+
+            rows = cursor.fetchall()
+
+            columns = [
+                "id",
+                "hostname",
+                "ip_address",
+                "username",
+                "os",
+                "os_version",
+                "kernel_version",
+                "status",
+                "created_at",
+                "updated_at",
+            ]
+
+            return [
+                dict(zip(columns, row))
+                for row in rows
+            ]
+
+    finally:
+        connection.close()
+
+
+@app.get("/api/assets/{asset_id}/telemetry")
+def get_telemetry(asset_id: str):
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    captured_at,
+                    cpu_usage_percent,
+                    memory_total_mb,
+                    memory_used_mb,
+                    memory_available_mb,
+                    memory_usage_percent,
+                    load_1m,
+                    load_5m,
+                    load_15m,
+                    disk_total_gb,
+                    disk_used_gb,
+                    disk_free_gb,
+                    disk_usage_percent,
+                    network_data
+                FROM telemetry_snapshots
+                WHERE asset_id = %s
+                ORDER BY captured_at DESC
+                LIMIT 1
+                """,
+                (asset_id,),
+            )
+
+            row = cursor.fetchone()
+
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No telemetry found for this asset",
+                )
+
+            return {
+                "captured_at": row[0],
+                "cpu": {
+                    "usage_percent": float(row[1]),
+                },
+                "memory": {
+                    "total_mb": float(row[2]),
+                    "used_mb": float(row[3]),
+                    "available_mb": float(row[4]),
+                    "usage_percent": float(row[5]),
+                },
+                "load": {
+                    "1m": float(row[6]),
+                    "5m": float(row[7]),
+                    "15m": float(row[8]),
+                },
+                "disk": {
+                    "total_gb": float(row[9]),
+                    "used_gb": float(row[10]),
+                    "free_gb": float(row[11]),
+                    "usage_percent": float(row[12]),
+                },
+                "network": row[13],
+            }
+
+    finally:
+        connection.close()
+
+
+@app.get("/api/assets/{asset_id}/services")
+def get_services(asset_id: str):
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    captured_at,
+                    service_name,
+                    status,
+                    enabled
+                FROM service_snapshots
+                WHERE asset_id = %s
+                ORDER BY captured_at DESC
+                """,
+                (asset_id,),
+            )
+
+            rows = cursor.fetchall()
+
+            return [
+                {
+                    "captured_at": row[0],
+                    "service": row[1],
+                    "status": row[2],
+                    "enabled": row[3],
+                }
+                for row in rows
+            ]
+
+    finally:
+        connection.close()
+
+
+@app.get("/api/assets/{asset_id}/telemetry/history")
+def get_telemetry_history(
+    asset_id: str,
+    limit: int = 50,
+):
+    if limit < 1 or limit > 500:
+        raise HTTPException(
+            status_code=400,
+            detail="limit must be between 1 and 500",
+        )
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    captured_at,
+                    cpu_usage_percent,
+                    memory_usage_percent,
+                    load_1m,
+                    load_5m,
+                    load_15m,
+                    disk_usage_percent
+                FROM telemetry_snapshots
+                WHERE asset_id = %s
+                ORDER BY captured_at DESC
+                LIMIT %s
+                """,
+                (asset_id, limit),
+            )
+
+            rows = cursor.fetchall()
+
+            return [
+                {
+                    "captured_at": row[0],
+                    "cpu_usage_percent": float(row[1]),
+                    "memory_usage_percent": float(row[2]),
+                    "load": {
+                        "1m": float(row[3]),
+                        "5m": float(row[4]),
+                        "15m": float(row[5]),
+                    },
+                    "disk_usage_percent": float(row[6]),
+                }
+                for row in rows
+            ]
+
+    finally:
+        connection.close()
+
+
+@app.post("/api/assets/{asset_id}/patch-check")
+def check_patches(asset_id: str):
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    hostname,
+                    os,
+                    os_version,
+                    status
+                FROM assets
+                WHERE id = %s
+                """,
+                (asset_id,),
+            )
+
+            asset = cursor.fetchone()
+
+            if asset is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Asset not found",
+                )
+
+            if asset[4].upper() != "ACTIVE":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Asset is not active: {asset[4]}",
+                )
+
+    finally:
+        connection.close()
+
+    try:
+
+        result = subprocess.run(
+            [
+                "/usr/bin/python3",
+                str(PATCH_DISCOVERY),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(
+            status_code=504,
+            detail="Patch discovery timed out",
+        )
+
+    if result.returncode != 0:
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Patch discovery failed",
+                "error": result.stderr.strip(),
+            },
+        )
+
+    try:
+        discovery = json.loads(
+            result.stdout
+        )
+
+    except json.JSONDecodeError:
+
+        raise HTTPException(
+            status_code=500,
+            detail="Invalid patch discovery response",
+        )
+
+    return {
+        "asset_id": asset_id,
+        "hostname": asset[1],
+        "os": asset[2],
+        "os_version": asset[3],
+        "patch_check": discovery,
+    }
+
+
+@app.post("/api/assets/{asset_id}/patch-jobs")
+def create_patch_job(
+    asset_id: str,
+    request: PatchRequest,
+):
+
+    # ---------------------------------------------------------
+    # 1. Verify asset exists and is active
+    # ---------------------------------------------------------
+
+    connection = get_connection()
+
+    try:
+        with connection.cursor() as cursor:
+
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    hostname,
+                    status
+                FROM assets
+                WHERE id = %s
+                """,
+                (asset_id,),
+            )
+
+            asset = cursor.fetchone()
+
+            if asset is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Asset not found",
+                )
+
+            if asset[2].upper() != "ACTIVE":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Asset is not active: {asset[2]}",
+                )
+
+    finally:
+        connection.close()
+
+    # ---------------------------------------------------------
+    # 2. Discover currently available packages
+    # ---------------------------------------------------------
+
+    try:
+
+        discovery_result = subprocess.run(
+            [
+                "/usr/bin/python3",
+                str(PATCH_DISCOVERY),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    except subprocess.TimeoutExpired:
+
+        raise HTTPException(
+            status_code=504,
+            detail="Patch discovery timed out",
+        )
+
+    if discovery_result.returncode != 0:
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Patch discovery failed",
+                "error": discovery_result.stderr.strip(),
+            },
+        )
+
+    try:
+
+        discovery = json.loads(
+            discovery_result.stdout
+        )
+
+    except json.JSONDecodeError:
+
+        raise HTTPException(
+            status_code=500,
+            detail="Invalid patch discovery response",
+        )
+
+    # ---------------------------------------------------------
+    # 3. Validate requested packages
+    # ---------------------------------------------------------
+
+    available_packages = {
+        package["name"]
+        for package in discovery.get("packages", [])
+    }
+
+    requested_packages = set(
+        request.packages
+    )
+
+    invalid_packages = (
+        requested_packages - available_packages
+    )
+
+    if invalid_packages:
+
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "One or more packages are not currently upgradeable",
+                "invalid_packages": sorted(invalid_packages),
+                "available_packages": sorted(available_packages),
+            },
+        )
+
+    # ---------------------------------------------------------
+    # 4. Execute Ansible patching
+    # ---------------------------------------------------------
+
+    playbook = (
+        BASE_DIR
+        / "ansible"
+        / "patch_execute.yml"
+    )
+
+    extra_vars = json.dumps(
+        {
+            "patch_packages": sorted(
+                requested_packages
+            )
+        }
+    )
+
+    try:
+
+        result = subprocess.run(
+            [
+                "/usr/bin/ansible-playbook",
+                "-i",
+                str(BASE_DIR / "ansible" / "inventory.ini"),
+                str(playbook),
+                "-e",
+                extra_vars,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,
+            check=False,
+        )
+
+    except subprocess.TimeoutExpired:
+
+        raise HTTPException(
+            status_code=504,
+            detail="Patch execution timed out",
+        )
+
+    # ---------------------------------------------------------
+    # 5. Return patch result
+    # ---------------------------------------------------------
+
+    if result.returncode != 0:
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Patch execution failed",
+                "stdout": result.stdout[-5000:],
+                "stderr": result.stderr[-5000:],
+            },
+        )
+
+    return {
+        "asset_id": asset_id,
+        "hostname": asset[1],
+        "status": "completed",
+        "packages": sorted(requested_packages),
+        "ansible_output": result.stdout[-10000:],
+    }

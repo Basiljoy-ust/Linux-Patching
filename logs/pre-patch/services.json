@@ -1,0 +1,10 @@
+{
+  "ssh.service": {
+    "status": "active",
+    "enabled": "disabled"
+  },
+  "systemd-journald.service": {
+    "status": "active",
+    "enabled": "static"
+  }
+}
