@@ -1,2 +1,8 @@
 /ansible/host_vars/*/vault.yml
 /logs/api.log*
+
+/backend/.venv
+/backend/__pycache__
+.venv/
+__pycache__/
+*.py[cod]
