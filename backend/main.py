@@ -1,6 +1,12 @@
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from database import get_connection
+from platform_profiles import (
+    is_supported,
+    normalize_package_name,
+    normalize_profile,
+    profile_info,
+)
 
 import json
 import logging
@@ -56,6 +62,9 @@ class PatchRequest(BaseModel):
 ANSIBLE_DIR = BASE_DIR / "ansible"
 ANSIBLE_INVENTORY = ANSIBLE_DIR / "inventory.ini"
 LOCAL_INVENTORY_HOSTS = {"localhost", "Linux-patching1"}
+# Re-tune once RHEL preflight steps have been measured on real hosts.
+DISCOVERY_TIMEOUT_SECONDS = int(os.environ.get("PATCH_DISCOVERY_TIMEOUT", "180"))
+PATCH_JOB_TIMEOUT_SECONDS = int(os.environ.get("PATCH_JOB_TIMEOUT", "900"))
 ANSIBLE_VAULT_PASSWORD_FILE = Path(
     os.environ.get(
         "ANSIBLE_VAULT_PASSWORD_FILE",
@@ -171,14 +180,15 @@ def discover_remote_patches(hostname: str) -> dict:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=180,
+                timeout=DISCOVERY_TIMEOUT_SECONDS,
                 check=False,
                 cwd=BASE_DIR,
             )
         except subprocess.TimeoutExpired as exc:
             api_logger.error(
-                "patch_discovery_timed_out target=%s timeout_seconds=180 elapsed_ms=%.2f",
+                "patch_discovery_timed_out target=%s timeout_seconds=%s elapsed_ms=%.2f",
                 hostname,
+                DISCOVERY_TIMEOUT_SECONDS,
                 (perf_counter() - started_at) * 1000,
             )
             raise HTTPException(
@@ -228,6 +238,70 @@ def discover_remote_patches(hostname: str) -> dict:
             (perf_counter() - started_at) * 1000,
         )
         return discovery
+
+
+def persist_platform(asset_id: str, discovery: dict) -> str:
+    """Store the detected platform on the asset and return the profile.
+
+    Anything that is not a supported profile is stored as 'unsupported'.
+    """
+    profile = normalize_profile(discovery.get("platform_profile"))
+    os_family, _ = profile_info(profile)
+
+    connection = get_connection()
+
+    try:
+        with connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE assets
+                    SET
+                        os_family = %s,
+                        platform_profile = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                      AND (
+                        os_family IS DISTINCT FROM %s
+                        OR platform_profile IS DISTINCT FROM %s
+                      )
+                    """,
+                    (os_family, profile, asset_id, os_family, profile),
+                )
+    finally:
+        connection.close()
+
+    return profile
+
+
+def require_supported_platform(asset_id: str, hostname: str, discovery: dict) -> str:
+    profile = persist_platform(asset_id, discovery)
+
+    if not is_supported(profile):
+        api_logger.warning(
+            "platform_unsupported asset_id=%s target=%s detected=%s",
+            asset_id,
+            hostname,
+            discovery.get("platform_profile"),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail="Platform not supported",
+        )
+
+    return profile
+
+
+def read_patch_result(output_dir: str, hostname: str) -> dict:
+    """Read the machine-readable result written by patch_execute.yml."""
+    result_file = Path(output_dir) / f"linux-patching-result-{hostname}.json"
+
+    try:
+        data = json.loads(result_file.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        api_logger.warning("patch_result_unreadable target=%s", hostname)
+        return {}
 
 
 def discover_running_services(hostname: str) -> dict[str, dict[str, str]]:
@@ -394,7 +468,9 @@ def get_assets():
                     kernel_version,
                     status,
                     created_at,
-                    updated_at
+                    updated_at,
+                    os_family,
+                    platform_profile
                 FROM assets
                 ORDER BY created_at DESC
                 """
@@ -413,12 +489,20 @@ def get_assets():
                 "status",
                 "created_at",
                 "updated_at",
+                "os_family",
+                "platform_profile",
             ]
 
-            return [
-                dict(zip(columns, row))
-                for row in rows
-            ]
+            assets = []
+
+            for row in rows:
+                asset = dict(zip(columns, row))
+                asset["package_manager"] = profile_info(
+                    asset["platform_profile"]
+                )[1]
+                assets.append(asset)
+
+            return assets
 
     finally:
         connection.close()
@@ -634,12 +718,15 @@ def check_patches(asset_id: str):
         asset[3],
     )
     discovery = discover_remote_patches(asset[1])
+    profile = require_supported_platform(asset_id, asset[1], discovery)
 
     return {
         "asset_id": asset_id,
         "hostname": asset[1],
         "os": asset[2],
         "os_version": asset[3],
+        "os_family": profile_info(profile)[0],
+        "platform_profile": profile,
         "patch_check": discovery,
     }
 
@@ -699,17 +786,24 @@ def create_patch_job(
     # ---------------------------------------------------------
 
     discovery = discover_remote_patches(asset[1])
+    platform_profile = require_supported_platform(asset_id, asset[1], discovery)
+    os_family, package_manager = profile_info(platform_profile)
 
     # ---------------------------------------------------------
     # 3. Validate requested packages
     # ---------------------------------------------------------
 
+    # Architecture suffixes are stripped on both sides so "openssl" and
+    # "openssl.x86_64" both match the discovered "openssl.x86_64".
     available_packages = {
-        package["name"]
+        normalize_package_name(package["name"], package_manager)
         for package in discovery.get("packages", [])
     }
 
-    requested_packages = set(request.packages)
+    requested_packages = {
+        normalize_package_name(name, package_manager)
+        for name in request.packages
+    }
 
     invalid_packages = (
         requested_packages - available_packages
@@ -739,9 +833,11 @@ def create_patch_job(
                     """
                     INSERT INTO patch_jobs (
                         asset_id,
-                        status
+                        status,
+                        package_manager
                     )
                     VALUES (
+                        %s,
                         %s,
                         %s
                     )
@@ -750,6 +846,7 @@ def create_patch_job(
                     (
                         asset_id,
                         "CREATED",
+                        package_manager,
                     ),
                 )
 
@@ -849,11 +946,14 @@ def create_patch_job(
         / "patch_execute.yml"
     )
 
+    result_dir = TemporaryDirectory(prefix="linux-patching-result-")
+
     extra_vars = json.dumps(
         {
             "patch_packages": sorted(
                 requested_packages
-            )
+            ),
+            "patch_result_output_dir": result_dir.name,
         }
     )
 
@@ -872,12 +972,13 @@ def create_patch_job(
             ],
             capture_output=True,
             text=True,
-            timeout=900,
+            timeout=PATCH_JOB_TIMEOUT_SECONDS,
             check=False,
             cwd=BASE_DIR,
         )
 
     except subprocess.TimeoutExpired:
+        result_dir.cleanup()
 
         connection = get_connection()
 
@@ -940,9 +1041,20 @@ def create_patch_job(
     # 7. Process Ansible result
     # ---------------------------------------------------------
 
+    patch_result = read_patch_result(result_dir.name, asset[1])
+    result_dir.cleanup()
+
+    # None when the playbook could not report it (never guessed as False).
+    reboot_required = patch_result.get("reboot_required")
+
     if result.returncode != 0:
 
-        failure_reason = result.stderr.strip()
+        # Ansible usually reports task failures (including RHEL preflight
+        # assertions) on stdout, so fall back to it when stderr is empty.
+        failure_reason = (
+            result.stderr.strip()
+            or result.stdout.strip()
+        )
 
         if not failure_reason:
             failure_reason = "Ansible patch execution failed"
@@ -1028,11 +1140,13 @@ def create_patch_job(
                     SET
                         status = %s,
                         completed_at = NOW(),
-                        success = TRUE
+                        success = TRUE,
+                        reboot_required = %s
                     WHERE id = %s
                     """,
                     (
                         "COMPLETED",
+                        reboot_required,
                         job_id,
                     ),
                 )
@@ -1061,6 +1175,7 @@ def create_patch_job(
                         "Patch execution completed successfully",
                         json.dumps({
                             "packages": sorted(requested_packages),
+                            "reboot_required": reboot_required,
                             "ansible_output": result.stdout[-10000:],
                         }),
                     ),
@@ -1076,6 +1191,9 @@ def create_patch_job(
         "status": "COMPLETED",
         "success": True,
         "packages": sorted(requested_packages),
+        "os_family": os_family,
+        "platform_profile": platform_profile,
+        "reboot_required": reboot_required,
         "created_at": created_at,
         "ansible_output": result.stdout[-10000:],
     }

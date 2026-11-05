@@ -26,11 +26,27 @@
       register: failed_services
       changed_when: false
 
-    - name: Get upgradeable packages
+    - name: Get upgradeable packages (Debian family)
       ansible.builtin.shell:
         cmd: apt list --upgradable 2>/dev/null | tail -n +2
-      register: upgradeable_packages
+      register: upgradeable_packages_apt
       changed_when: false
+      when: ansible_facts['os_family'] == 'Debian'
+
+    # dnf check-update exits 100 when updates exist, 0 when none
+    - name: Get upgradeable packages (RedHat family)
+      ansible.builtin.command:
+        cmd: dnf check-update --quiet
+      register: upgradeable_packages_dnf
+      changed_when: false
+      failed_when: upgradeable_packages_dnf.rc not in [0, 100]
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Combine upgradeable package listing
+      ansible.builtin.set_fact:
+        upgradeable_packages_lines: >-
+          {{ (upgradeable_packages_apt.stdout_lines | default([]))
+             + (upgradeable_packages_dnf.stdout_lines | default([])) }}
 
     - name: Display system information
       ansible.builtin.debug:
@@ -50,4 +66,4 @@
 
     - name: Display upgradeable packages
       ansible.builtin.debug:
-        var: upgradeable_packages.stdout_lines
+        var: upgradeable_packages_lines

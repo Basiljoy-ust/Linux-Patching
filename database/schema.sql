@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS assets (
     username VARCHAR(255) NOT NULL,
     os VARCHAR(100),
     os_version VARCHAR(100),
+    os_family VARCHAR(20),
+    platform_profile VARCHAR(20),
     kernel_version VARCHAR(255),
     status VARCHAR(50) NOT NULL DEFAULT 'REGISTERED',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -71,6 +73,8 @@ CREATE TABLE IF NOT EXISTS patch_jobs (
     post_snapshot_at TIMESTAMPTZ,
 
     reboot_required BOOLEAN DEFAULT FALSE,
+
+    package_manager VARCHAR(10),
 
     success BOOLEAN,
 

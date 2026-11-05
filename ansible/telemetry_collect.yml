@@ -1,0 +1,60 @@
+---
+# Collect telemetry from one remote host and fetch the JSON to the controller.
+# Used by backend/save_telemetry.py for non-local assets.
+- name: Collect telemetry from the selected Linux server
+  hosts: patch_targets
+  become: true
+  gather_facts: true
+  gather_subset: min
+
+  vars:
+    agent_dir: /opt/linux-patch-agent
+    telemetry_result: "{{ agent_dir }}/telemetry-{{ inventory_hostname }}.json"
+    target_python: "{{ ansible_facts.python.executable | default('python3') }}"
+
+  tasks:
+    - name: Ensure patch agent directory exists
+      ansible.builtin.file:
+        path: "{{ agent_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy telemetry collector
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../telemetry/collector.py"
+        dest: "{{ agent_dir }}/collector.py"
+        mode: "0755"
+
+    - name: Copy systemd service inventory helper
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../telemetry/service_inventory.py"
+        dest: "{{ agent_dir }}/service_inventory.py"
+        mode: "0644"
+
+    # SELinux (RHEL): relabel in case the copied files are blocked.
+    - name: Restore SELinux contexts on the agent directory
+      ansible.builtin.command:
+        cmd: "restorecon -R {{ agent_dir }}"
+      changed_when: false
+      failed_when: false
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Run telemetry collector
+      ansible.builtin.command:
+        argv:
+          - "{{ target_python }}"
+          - "{{ agent_dir }}/collector.py"
+      register: telemetry_output
+      changed_when: false
+
+    - name: Write telemetry on the server
+      ansible.builtin.copy:
+        content: "{{ telemetry_output.stdout }}"
+        dest: "{{ telemetry_result }}"
+        mode: "0600"
+
+    - name: Fetch telemetry to the master
+      ansible.builtin.fetch:
+        src: "{{ telemetry_result }}"
+        dest: "{{ telemetry_output_dir }}/"
+        flat: true

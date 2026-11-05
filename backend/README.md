@@ -20,3 +20,27 @@ For a patch check, find the `patch_check_requested` and
 hostname Ansible was asked to check. For `GET /services`, look for
 `service_discovery_completed`. The API process account needs write permission
 to the project's `logs/` directory.
+
+## Multi-platform support (Ubuntu 24.04, RHEL 8, RHEL 9)
+
+`platform_profiles.py` defines the supported profiles. `patch-check` and
+`patch-jobs` always run discovery first, store the detected `os_family` /
+`platform_profile` on the asset, and return **409 "Platform not supported"** for
+anything else (including RHEL 7 and RHEL 10).
+
+- `GET /api/assets` also returns `os_family`, `platform_profile`, `package_manager`.
+- RPM architecture suffixes are stripped from both discovered and requested
+  package names, so `openssl` and `openssl.x86_64` are equivalent.
+- `POST patch-jobs` stores `reboot_required` (NULL if the playbook could not
+  report it) and returns it with `os_family` and `platform_profile`.
+- Timeouts can be tuned with `PATCH_DISCOVERY_TIMEOUT` (default 180s) and
+  `PATCH_JOB_TIMEOUT` (default 900s).
+
+Existing databases: apply `database/alter_platform_profiles.sql` by hand.
+
+Remote telemetry (run from cron or a systemd timer):
+
+```bash
+python save_telemetry.py --host <hostname>
+python save_telemetry.py --all      # every ACTIVE asset
+```

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Must run on Python 3.6 (RHEL 8 default).
 
 import json
 import os
@@ -13,15 +14,17 @@ from service_inventory import get_services
 
 def run_command(command):
     try:
-        result = subprocess.run(
+        # Popen/communicate instead of run(capture_output, text): Python 3.6
+        process = subprocess.Popen(
             command,
             shell=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
         )
+        stdout, _ = process.communicate(timeout=30)
 
-        return result.stdout.strip()
+        return stdout.strip()
 
     except Exception as exc:
         return f"ERROR: {exc}"

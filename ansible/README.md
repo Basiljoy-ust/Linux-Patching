@@ -79,3 +79,30 @@ snapshots.
 
 Telemetry collection also discovers all running services. Its Ansible
 playbooks copy `telemetry/service_inventory.py` alongside the collector.
+
+## RHEL 8 / RHEL 9 hosts
+
+Supported platform profiles (detected from `/etc/os-release` by
+`patching/discover.py`; anything else is `unsupported` and refused with HTTP 409):
+
+| Profile | Package manager | Reboot check |
+|---|---|---|
+| `ubuntu-24.04` | `apt` | `/var/run/reboot-required` |
+| `rhel-9` | `dnf` | `needs-restarting -r` |
+| `rhel-8` | `dnf` | `needs-restarting -r` |
+
+Onboarding a RHEL host (manual, same as Ubuntu):
+
+1. Add it to `[rhel_targets]` in `inventory.ini`.
+2. Create `host_vars/<hostname>/vault.yml` with `ansible-vault create`.
+3. Insert the asset row with `status = 'ACTIVE'`.
+4. Install `dnf-utils` on the host (provides `needs-restarting`); the patch
+   preflight fails the job without it. The preflight also requires at least one
+   enabled `dnf` repository.
+
+Reboots are report-only: `reboot_required` is stored on the patch job and
+returned by the API, and nothing is ever rebooted automatically.
+
+`telemetry_collect.yml` collects telemetry from a remote host for
+`backend/save_telemetry.py`. On RHEL, if the copied agent files are blocked by
+SELinux, run `restorecon -R /opt/linux-patch-agent` (the playbook does this too).

@@ -2,17 +2,29 @@
 - name: Discover available patches on the selected Linux server
   hosts: patch_targets
   become: true
-  gather_facts: false
+  # Minimal facts only: needed to choose the metadata refresh per OS family.
+  # discover.py does its own platform detection from /etc/os-release.
+  gather_facts: true
+  gather_subset: min
 
   vars:
     discovery_script: /tmp/linux-patching-discover.py
     discovery_result: "/tmp/linux-patching-discovery-{{ inventory_hostname }}.json"
+    # RHEL 8 may only ship platform-python; use whatever Ansible itself uses.
+    target_python: "{{ ansible_facts.python.executable | default('python3') }}"
 
   tasks:
     - name: Refresh APT metadata when stale
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
+      when: ansible_facts['os_family'] == 'Debian'
+
+    # A host with no usable repos fails here and is reported as a discovery failure (502).
+    - name: Refresh DNF metadata
+      ansible.builtin.dnf:
+        update_cache: true
+      when: ansible_facts['os_family'] == 'RedHat'
 
     - name: Copy patch discovery script
       ansible.builtin.copy:
@@ -23,7 +35,7 @@
     - name: Discover upgradeable packages on the server
       ansible.builtin.command:
         argv:
-          - python3
+          - "{{ target_python }}"
           - "{{ discovery_script }}"
       register: discovery_output
       changed_when: false
