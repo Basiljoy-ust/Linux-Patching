@@ -87,7 +87,7 @@ Supported platform profiles (detected from `/etc/os-release` by
 
 | Profile | Package manager | Reboot check |
 |---|---|---|
-| `ubuntu-24.04` | `apt` | `/var/run/reboot-required` |
+| `ubuntu` (any version) | `apt` | `/var/run/reboot-required` |
 | `rhel-9` | `dnf` | `needs-restarting -r` |
 | `rhel-8` | `dnf` | `needs-restarting -r` |
 

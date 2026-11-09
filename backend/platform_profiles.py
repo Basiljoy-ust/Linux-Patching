@@ -1,14 +1,19 @@
 """Platform profiles: the single place that describes how each supported
-operating system is patched. Anything not listed here is "unsupported"."""
+operating system is patched. Anything not listed here is "unsupported".
+
+Ubuntu is supported as a family, not pinned to one release: any Ubuntu
+version matches the "ubuntu" profile. 24.04 is simply the version the test
+host happened to run when this was built, not a restriction in the code.
+RHEL is gated to specific major versions (8, 9) because that distinction
+drives real behaviour differences (default Python, systemd version)."""
 
 import re
 
 UNSUPPORTED = "unsupported"
 
 PLATFORM_PROFILES = {
-    "ubuntu-24.04": {
+    "ubuntu": {
         "family": "Debian",
-        "major": "24.04",
         "package_manager": "apt",
         "python": "/usr/bin/python3",
         "reboot_check": "file:/var/run/reboot-required",

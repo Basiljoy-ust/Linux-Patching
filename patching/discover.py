@@ -7,11 +7,10 @@ import subprocess
 from datetime import datetime, timezone
 
 
-SUPPORTED = {
-    ("ubuntu", "24.04"): ("ubuntu-24.04", "Debian", "apt"),
-    ("rhel", "9"): ("rhel-9", "RedHat", "dnf"),
-    ("rhel", "8"): ("rhel-8", "RedHat", "dnf"),
-}
+# Ubuntu is supported as a family: any version matches "ubuntu", the same
+# way it always has. RHEL is gated to specific major versions because that
+# distinction drives real behaviour differences (default Python, systemd).
+SUPPORTED_RHEL_MAJORS = {"8", "9"}
 
 
 def run_command(command):
@@ -55,15 +54,15 @@ def detect_platform(os_release=None):
     distro = os_release.get("ID", "").lower()
     version = os_release.get("VERSION_ID", "")
 
+    if distro == "ubuntu":
+        return "ubuntu", "Debian", "apt"
+
     if distro == "rhel":
-        version = version.split(".")[0]
+        major = version.split(".")[0]
+        if major in SUPPORTED_RHEL_MAJORS:
+            return "rhel-{0}".format(major), "RedHat", "dnf"
 
-    match = SUPPORTED.get((distro, version))
-
-    if match is None:
-        return "unsupported", None, None
-
-    return match
+    return "unsupported", None, None
 
 
 # ---------------------------------------------------------------- apt

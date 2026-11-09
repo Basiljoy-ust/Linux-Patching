@@ -1,18 +1,18 @@
-# Multi-Platform Patching Support: Ubuntu 24.04, RHEL 8, RHEL 9
+# Multi-Platform Patching Support: Ubuntu, RHEL 8, RHEL 9
 
 **Project:** Linux Patching
 **Date:** 2026-11-04
-**Status:** Draft for review (revision 4: scoped to RHEL 8 and RHEL 9 only; RHEL 7 and RHEL 10 removed from this plan)
+**Status:** Draft for review (revision 5: Ubuntu support generalized to the whole distribution family, not pinned to the 24.04 test release; RHEL still scoped to 8 and 9 only)
 
 ---
 
 ## 1. Purpose and scope
 
-The Linux Patching system currently supports Ubuntu 24.04 only. This plan extends it to RHEL 8 and RHEL 9, while keeping Ubuntu 24.04 working unchanged.
+The Linux Patching system currently supports Ubuntu only (tested so far on 24.04, see 2.2). This plan extends it to RHEL 8 and RHEL 9, while keeping Ubuntu working unchanged, on any release.
 
 | Platform | Status after this plan |
 |---|---|
-| Ubuntu 24.04 (Noble) | Existing. Behaviour unchanged. |
+| Ubuntu (any version) | Existing. Behaviour unchanged. |
 | RHEL 9 | New. |
 | RHEL 8 | New. |
 
@@ -77,7 +77,7 @@ Written for: engineers who will implement, test and maintain the change.
 
 ### 3.1 Approach: one codebase, driven by a platform profile
 
-Each server is assigned a **platform profile**: `ubuntu-24.04`, `rhel-8`, or `rhel-9`. Any other platform (including RHEL 7 and RHEL 10, if encountered) is `unsupported` and refused with HTTP 409 before any change is made. Profiles are defined in one place; the API, discovery script and playbooks read from them. Behaviour that differs between platforms (package manager, reboot check, service listing) comes from the profile, not from scattered `if` statements.
+Each server is assigned a **platform profile**: `ubuntu`, `rhel-8`, or `rhel-9`. `ubuntu` matches any Ubuntu version — Ubuntu is supported as a distribution family, not pinned to the 24.04 release used for testing, the same way it has always behaved in this codebase. RHEL is gated to specific major versions because the major version drives real behaviour differences (default Python, systemd capabilities); any other platform (including RHEL 7 and RHEL 10, if encountered) is `unsupported` and refused with HTTP 409 before any change is made. Profiles are defined in one place; the API, discovery script and playbooks read from them. Behaviour that differs between platforms (package manager, reboot check, service listing) comes from the profile, not from scattered `if` statements.
 
 Rejected alternative: a separate code copy for RHEL. It would drift from the Ubuntu code, and every fix would need to be made twice.
 
@@ -87,7 +87,7 @@ RHEL 8 and RHEL 9 are close enough (both `dnf` 4.x, both systemd with JSON suppo
 
 | Profile | Family | Package manager | Python 3 on target | Reboot check | Service listing | Supported |
 |---|---|---|---|---|---|---|
-| `ubuntu-24.04` | Debian | `apt` | Default (3.12) | `/var/run/reboot-required` | JSON | Yes (existing) |
+| `ubuntu` (any version) | Debian | `apt` | Whatever that release ships (3.12 on the 24.04 test host) | `/var/run/reboot-required` | JSON | Yes (existing) |
 | `rhel-9` | RedHat | `dnf` 4.x | Default (3.9) | `needs-restarting -r` (dnf-utils) | JSON (systemd 252) | Yes |
 | `rhel-8` | RedHat | `dnf` 4.x | Default (3.6); 3.9 via AppStream module if needed | `needs-restarting -r` (dnf-utils) | JSON (systemd 239) | Yes |
 | any other (incl. RHEL 7, RHEL 10) | — | — | — | — | — | **No** (refused, 409) |
@@ -96,9 +96,8 @@ Profile definition (a single config module, `backend/platform_profiles.py`):
 
 ```python
 PLATFORM_PROFILES = {
-    "ubuntu-24.04": {
+    "ubuntu": {
         "family": "Debian",
-        "major": "24.04",
         "package_manager": "apt",
         "python": "/usr/bin/python3",
         "reboot_check": "file:/var/run/reboot-required",
@@ -135,7 +134,7 @@ Note: the `python` path and the exit codes for `check-update` are assumptions ca
 
 1. `patching/discover.py` detects the platform itself, by reading `/etc/os-release` on the target, and reports `platform_profile`, `os_family` and `package_manager` in its JSON output. Detection does not depend on Ansible facts, so it works the same whether discovery is run directly or through a playbook.
 2. The first time `discover_remote_patches()` runs for an asset, `backend/main.py` persists the detected profile into `assets.os_family` / `assets.platform_profile`.
-3. If the detected profile doesn't match `ubuntu-24.04`, `rhel-8`, or `rhel-9`, it is stored as `unsupported`.
+3. If the detected distribution isn't Ubuntu (any version) or RHEL 8/9, it is stored as `unsupported`.
 4. Both `POST patch-check` and `POST patch-jobs` always run discovery first (as they already do today), then check the returned profile before proceeding. This avoids a chicken-and-egg problem on a brand-new asset that has never been discovered yet — the 409 check is based on the live discovery result, not only on a value that might not exist in the database yet. Once stored, later calls reuse it for display (`GET /api/assets`) without needing a fresh discovery.
 
 ### 3.4 Reboot handling
@@ -155,7 +154,7 @@ Each platform has a preflight step that runs before any change:
 
 | Profile | Preflight checks |
 |---|---|
-| Ubuntu 24.04 | Existing behaviour (`apt update` before patching). |
+| Ubuntu | Existing behaviour (`apt update` before patching), unchanged for any version. |
 | RHEL 9, 8 | `subscription-manager status` (or confirm repos reachable); `dnf repolist` shows at least one enabled repo; `dnf-utils` installed (provides `needs-restarting`). |
 
 This preflight runs inside `ansible/patch_execute.yml`, immediately before the upgrade task, for both RHEL profiles. `ansible/patch_discovery.yml` does not duplicate it: if a RHEL host has no usable repos, `dnf check-update` itself fails and is reported through the existing 502 "discovery failed" path (section 5.6), so a separate preflight there would be redundant.
@@ -198,10 +197,10 @@ Known gap: nothing checks that the row's hostname matches the inventory, so a ty
 
 ## 4. Platform-specific details
 
-### 4.1 Ubuntu 24.04
+### 4.1 Ubuntu
 
 - Keep the existing `apt` logic unchanged.
-- Other Ubuntu releases are not supported in this revision. They are refused by the profile check.
+- Supported as a distribution family: any Ubuntu version matches the `ubuntu` profile, the same as before this plan. 24.04 is only the version the test host happens to run (section 2.2); it is not a gate in the code.
 
 ### 4.2 RHEL 8
 
@@ -238,7 +237,7 @@ All seven endpoints keep the same URL, method and response shape. Each entry lis
 
 - **New fields per asset:** `os_family`, `platform_profile`, `package_manager`.
 - **Database:** add `os_family` and `platform_profile` to `assets` (see section 7).
-- **Backfill:** existing assets with `os = 'Ubuntu'` **and** `os_version` starting with `24.04` are set to `platform_profile = 'ubuntu-24.04'`. Any other existing row is left as `platform_profile = 'unsupported'` rather than assumed to be 24.04 — don't guess a profile for a version that was never actually tested.
+- **Backfill:** existing assets with `os = 'Ubuntu'` are set to `platform_profile = 'ubuntu'`, regardless of `os_version` — Ubuntu support isn't pinned to one release. Any other existing row (RHEL or unknown) is left as `platform_profile = 'unsupported'` until a fresh discovery confirms a supported RHEL major version.
 
 ### 5.3 `GET /api/assets/{id}/telemetry`: latest health readings
 
@@ -338,13 +337,12 @@ ALTER TABLE assets ADD COLUMN IF NOT EXISTS os_family VARCHAR(20);
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS platform_profile VARCHAR(20);
 ALTER TABLE patch_jobs ADD COLUMN IF NOT EXISTS package_manager VARCHAR(10);
 
--- Backfill only the version actually tested; do not assume other Ubuntu
--- versions are 24.04.
+-- Ubuntu is supported as a family, any version, so every existing Ubuntu row
+-- backfills to the 'ubuntu' profile regardless of its recorded os_version.
 UPDATE assets
-SET os_family = 'Debian', platform_profile = 'ubuntu-24.04'
+SET os_family = 'Debian', platform_profile = 'ubuntu'
 WHERE platform_profile IS NULL
-  AND os = 'Ubuntu'
-  AND os_version LIKE '24.04%';
+  AND os = 'Ubuntu';
 ```
 
 `patch_jobs.reboot_required` already exists in the schema; it only needs to be written by the code (section 3.4).
@@ -372,7 +370,7 @@ WHERE platform_profile IS NULL
 
 ### 9.1 Test matrix
 
-| Test | Ubuntu 24.04 | RHEL 8 | RHEL 9 |
+| Test | Ubuntu (test host: 24.04) | RHEL 8 | RHEL 9 |
 |---|---|---|---|
 | `GET /health` | Required | Required | Required |
 | `GET /api/assets` returns profile fields | Required | Required | Required |
@@ -443,7 +441,7 @@ WHERE platform_profile IS NULL
 
 ## 13. Appendix: command reference
 
-| Purpose | Ubuntu 24.04 | RHEL 8, 9 |
+| Purpose | Ubuntu (any version) | RHEL 8, 9 |
 |---|---|---|
 | Refresh metadata | `apt update` | `dnf makecache` |
 | List upgradable packages | `apt list --upgradable` | `dnf check-update --quiet` (exit 100 = updates) |
@@ -453,4 +451,4 @@ WHERE platform_profile IS NULL
 | Security updates only | Not implemented | `dnf updateinfo list security --quiet` |
 | Repo status | Not implemented | `dnf repolist`, `subscription-manager status` |
 | Running services (JSON) | `systemctl list-units --type=service --state=running --output=json` | Same as Ubuntu |
-| Default `python3` | 3.12 | 3.6 (RHEL 8), 3.9 (RHEL 9) |
+| Default `python3` | Whatever that release ships (3.12 on the 24.04 test host) | 3.6 (RHEL 8), 3.9 (RHEL 9) |

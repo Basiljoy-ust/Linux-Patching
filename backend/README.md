@@ -21,7 +21,7 @@ hostname Ansible was asked to check. For `GET /services`, look for
 `service_discovery_completed`. The API process account needs write permission
 to the project's `logs/` directory.
 
-## Multi-platform support (Ubuntu 24.04, RHEL 8, RHEL 9)
+## Multi-platform support (Ubuntu, RHEL 8, RHEL 9)
 
 `platform_profiles.py` defines the supported profiles. `patch-check` and
 `patch-jobs` always run discovery first, store the detected `os_family` /
