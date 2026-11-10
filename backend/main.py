@@ -1,21 +1,41 @@
 """Linux Patching API — application entry point.
 
 The endpoints live in routers/ and the shared Ansible/DB helpers in core/.
-Split out of this file on refactor/split-backend with no behaviour change.
+Zero-Day Radar intel is synced in the background (zeroday/sync.py) and
+served by the /api/zeroday and /api/dashboard endpoints.
 """
 
+import os
+from contextlib import asynccontextmanager
 from time import perf_counter
 
 from fastapi import FastAPI, Request
 
 from core.config import api_logger
+from routers import asset_vulns as asset_vulns_router
 from routers import assets as assets_router
+from routers import dashboard as dashboard_router
+from routers import patch_jobs as patch_jobs_router
 from routers import patching as patching_router
+from routers import updates as updates_router
+from routers import zeroday as zeroday_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Zero-Day Radar background sync; disable with ZERODAY_SYNC_ENABLED=0
+    # (e.g. in tests, or on a box without a radar instance).
+    if os.environ.get("ZERODAY_SYNC_ENABLED", "1") != "0":
+        from zeroday.sync import start_background
+
+        start_background()
+    yield
 
 
 app = FastAPI(
     title="Linux Patching API",
-    version="1.0.0",
+    version="1.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -54,3 +74,8 @@ def health():
 
 app.include_router(assets_router.router)
 app.include_router(patching_router.router)
+app.include_router(dashboard_router.router)
+app.include_router(updates_router.router)
+app.include_router(patch_jobs_router.router)
+app.include_router(zeroday_router.router)
+app.include_router(asset_vulns_router.router)

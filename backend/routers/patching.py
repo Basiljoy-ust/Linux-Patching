@@ -25,6 +25,8 @@ from core.config import (
     PATCH_JOB_TIMEOUT_SECONDS,
     api_logger,
 )
+from cve_mapping import mapper
+from services import fleet_join
 
 router = APIRouter()
 
@@ -85,6 +87,14 @@ def check_patches(asset_id: str):
     )
     discovery = discover_remote_patches(asset[1])
     profile = require_supported_platform(asset_id, asset[1], discovery)
+
+    # Store the result so the dashboard/updates/vulnerability views can
+    # render without re-running Ansible, and map packages to CVEs.
+    try:
+        fleet_join.save_pending_packages(asset_id, discovery)
+        mapper.refresh_for_discovery(discovery)
+    except Exception:
+        api_logger.exception("pending_persist_failed asset_id=%s", asset_id)
 
     return {
         "asset_id": asset_id,
@@ -550,6 +560,38 @@ def create_patch_job(
     finally:
         connection.close()
 
+    # Snapshot the CVEs this job closed and clear the patched packages
+    # from the stored pending list (Zero-Day integration).
+    cves_closed = []
+    try:
+        cves_closed = fleet_join.cves_closed_by(
+            asset_id, sorted(requested_packages)
+        )
+        fleet_join.remove_pending_packages(
+            asset_id, sorted(requested_packages)
+        )
+        if cves_closed:
+            connection = get_connection()
+            try:
+                with connection:
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            UPDATE patch_jobs
+                            SET cves_closed = %s, requested_packages = %s
+                            WHERE id = %s
+                            """,
+                            (
+                                json.dumps(cves_closed),
+                                json.dumps(sorted(requested_packages)),
+                                job_id,
+                            ),
+                        )
+            finally:
+                connection.close()
+    except Exception:
+        api_logger.exception("cves_closed_snapshot_failed job_id=%s", job_id)
+
     return {
         "job_id": str(job_id),
         "asset_id": asset_id,
@@ -561,5 +603,6 @@ def create_patch_job(
         "platform_profile": platform_profile,
         "reboot_required": reboot_required,
         "created_at": created_at,
+        "cves_closed": cves_closed,
         "ansible_output": result.stdout[-10000:],
     }

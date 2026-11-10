@@ -179,6 +179,22 @@ def installed_versions(name, arch):
     ]
 
 
+def updateinfo_with_cves():
+    """Raw `dnf updateinfo list --with-cve` output.
+
+    Collected here (on the managed host) and parsed on the control node
+    (backend/cve_mapping/rhel.py) to map packages to the CVEs their
+    pending updates fix. Returns "" when the command is unavailable.
+    """
+    result = run_command(["dnf", "updateinfo", "list", "--with-cve", "--quiet"])
+
+    # 0 = ok, 100 = updates available; anything else: skip, never fail
+    if result["returncode"] not in (0, 100):
+        return ""
+
+    return result["stdout"]
+
+
 def discover_dnf():
     result = run_command(["dnf", "check-update", "--quiet"])
 
@@ -226,12 +242,14 @@ def main():
     profile, os_family, package_manager = detect_platform()
 
     packages = []
+    updateinfo_cve = None
 
     if package_manager == "apt":
         result = run_command(["apt", "list", "--upgradable"])
         packages = parse_packages(result["stdout"])
     elif package_manager == "dnf":
         packages = discover_dnf()
+        updateinfo_cve = updateinfo_with_cves()
 
     response = {
         "checked_at": datetime.now(
@@ -248,6 +266,9 @@ def main():
 
         "packages": packages,
     }
+
+    if updateinfo_cve is not None:
+        response["updateinfo_cve"] = updateinfo_cve
 
     print(
         json.dumps(
