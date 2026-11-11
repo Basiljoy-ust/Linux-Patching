@@ -351,7 +351,7 @@ def pending_by_server() -> list[dict]:
 
 
 def dashboard_summary() -> dict:
-    """The Overview tiles and donut, computed from the fleet join."""
+    """The Overview tiles, donuts and bars, computed from the fleet join."""
     connection = get_connection()
     try:
         with connection.cursor() as cursor:
@@ -359,11 +359,13 @@ def dashboard_summary() -> dict:
                 """
                 SELECT
                     COUNT(*),
-                    COUNT(*) FILTER (WHERE status = 'ACTIVE')
+                    COUNT(*) FILTER (WHERE status = 'ACTIVE'),
+                    COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days'),
+                    COUNT(*) FILTER (WHERE status <> 'ACTIVE')
                 FROM assets
                 """
             )
-            total_assets, active_assets = cursor.fetchone()
+            total_assets, active_assets, new_30d, inactive_assets = cursor.fetchone()
 
             cursor.execute("SELECT COUNT(*) FROM pending_packages")
             pending_updates = cursor.fetchone()[0]
@@ -372,8 +374,94 @@ def dashboard_summary() -> dict:
                 "SELECT COUNT(DISTINCT asset_id) FROM pending_packages"
             )
             servers_with_pending = cursor.fetchone()[0]
+
+            # Per active server: distro, scanned-at-least-once (the platform
+            # profile is set on first discovery), and whether anything is
+            # pending. Basis for fleet_status and by_distribution.
+            cursor.execute(
+                """
+                SELECT a.id::text,
+                       COALESCE(a.os, 'Unknown'),
+                       a.platform_profile IS NOT NULL,
+                       EXISTS (SELECT 1 FROM pending_packages pp
+                               WHERE pp.asset_id = a.id)
+                FROM assets a
+                WHERE a.status = 'ACTIVE'
+                """
+            )
+            server_rows = cursor.fetchall()
+
+            # Most recent job status per asset (any age).
+            cursor.execute(
+                """
+                SELECT DISTINCT ON (asset_id) asset_id::text, status
+                FROM patch_jobs
+                ORDER BY asset_id, created_at DESC
+                """
+            )
+            last_job_status = dict(cursor.fetchall())
+
+            # Job executions over the last 30 days.
+            cursor.execute(
+                """
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE status = 'COMPLETED'),
+                       COUNT(*) FILTER (WHERE status = 'FAILED'),
+                       COUNT(*) FILTER (WHERE status IN ('CREATED', 'RUNNING'))
+                FROM patch_jobs
+                WHERE created_at > NOW() - INTERVAL '30 days'
+                """
+            )
+            jobs_total, jobs_succeeded, jobs_failed, jobs_running = cursor.fetchone()
+
+            # Servers whose most recent successful job reported that a reboot
+            # is required. We cannot see whether the reboot has happened since;
+            # this flags "patched, reboot reported needed by that job".
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT DISTINCT ON (asset_id) reboot_required
+                    FROM patch_jobs
+                    WHERE status = 'COMPLETED'
+                    ORDER BY asset_id, created_at DESC
+                ) last_jobs
+                WHERE reboot_required
+                """
+            )
+            reboot_flagged = cursor.fetchone()[0]
     finally:
         connection.close()
+
+    # One state per active server (disjoint buckets, worst wins):
+    # not_scanned -> failed (last job) -> pending -> up_to_date
+    fleet_status = {"up_to_date": 0, "pending": 0, "failed": 0, "not_scanned": 0}
+    distros: dict[str, dict] = {}
+    for asset_id, os_name, scanned, has_pending in server_rows:
+        if not scanned:
+            state = "not_scanned"
+        elif last_job_status.get(asset_id) == "FAILED":
+            state = "failed"
+        elif has_pending:
+            state = "pending"
+        else:
+            state = "up_to_date"
+        fleet_status[state] += 1
+
+        distro = distros.setdefault(
+            os_name, {"os": os_name, "servers": 0, "compliant": 0}
+        )
+        distro["servers"] += 1
+        if state == "up_to_date":
+            distro["compliant"] += 1
+
+    by_distribution = [
+        {
+            "os": d["os"],
+            "servers": d["servers"],
+            "compliant_pct": round(100 * d["compliant"] / d["servers"]),
+        }
+        for d in sorted(distros.values(), key=lambda d: -d["servers"])
+    ]
 
     join_rows = _join_rows()
     security_packages = {(r["asset_id"], r["package"]) for r in join_rows}
@@ -405,7 +493,21 @@ def dashboard_summary() -> dict:
     patched_servers = max(active_assets - servers_with_pending, 0)
 
     return {
-        "servers": {"total": total_assets, "active": active_assets},
+        "servers": {
+            "total": total_assets,
+            "active": active_assets,
+            "new_30d": new_30d,
+            "inactive": inactive_assets,
+        },
+        "fleet_status": fleet_status,
+        "by_distribution": by_distribution,
+        "jobs_30d": {
+            "total": jobs_total,
+            "succeeded": jobs_succeeded,
+            "failed": jobs_failed,
+            "running": jobs_running,
+        },
+        "reboot_flagged": reboot_flagged,
         "pending_updates": pending_updates,
         "security_updates": len(security_packages),
         "vulnerabilities": {
