@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from time import perf_counter
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import api_logger
 from routers import asset_vulns as asset_vulns_router
@@ -36,6 +37,19 @@ app = FastAPI(
     title="Linux Patching API",
     version="1.1.0",
     lifespan=lifespan,
+)
+
+# Let browser-based clients (the wireframe / future dashboard) call the API
+# from another origin. CORS_ORIGINS is a comma-separated list; the default
+# "*" is acceptable only while the API has no authentication — tighten it to
+# the dashboard's real origin when auth lands (credentials can't use "*").
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()
+    ],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 
