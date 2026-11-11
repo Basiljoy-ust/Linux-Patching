@@ -179,11 +179,33 @@ def cve_detail(cve_id: str):
         intel = dict(intel)
         intel.pop("context_evidence", None)  # heavy and not shown in the UI
 
+    # For CVEs Zero-Day does not track, give the UI the distro's own
+    # description and severity (collected from OSV / dnf updateinfo).
+    distro_info = None
+    if intel is None:
+        connection = get_connection()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT title, distro_severity FROM package_cves
+                    WHERE cve_id = %s AND title IS NOT NULL
+                    LIMIT 1
+                    """,
+                    (cve_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    distro_info = {"title": row[0], "severity": row[1]}
+        finally:
+            connection.close()
+
     return {
         "cve": cve_id,
         "source": "zeroday" if intel else "distro",
-        "exposure": exposure,   # null when no pending update maps to it
-        "intel": intel,         # null for distro-only CVEs
+        "exposure": exposure,       # null when no pending update maps to it
+        "intel": intel,             # null for distro-only CVEs
+        "distro_info": distro_info, # description/severity for distro-only CVEs
     }
 
 

@@ -95,6 +95,7 @@ _JOIN_SQL = """
         pp.available_version,
         pc.cve_id,
         pc.distro_severity,
+        pc.title AS distro_title,
         pc.fixed_version,
         z.cve_id IS NOT NULL AS tracked,
         z.title,
@@ -123,7 +124,7 @@ _JOIN_SQL = """
 _COLUMNS = [
     "asset_id", "hostname", "os", "os_family", "package",
     "current_version", "available_version", "cve_id", "distro_severity",
-    "fixed_version", "tracked", "title", "severity", "maturity",
+    "distro_title", "fixed_version", "tracked", "title", "severity", "maturity",
     "exploited", "ransomware", "true_zero_day", "public_poc", "kev",
     "kev_due_date", "urgency", "priority_score", "cvss_score",
     "epss_score", "confidence", "vendor",
@@ -149,7 +150,7 @@ def _join_rows(asset_id: str | None = None) -> list[dict]:
         if not row["tracked"]:
             row["source"] = "distro"
             row["severity"] = row["distro_severity"] or "unknown"
-            row["title"] = row["cve_id"]
+            row["title"] = row["distro_title"] or row["cve_id"]
         else:
             row["source"] = "zeroday"
     return rows

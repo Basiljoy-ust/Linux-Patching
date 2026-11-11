@@ -21,7 +21,7 @@ MISSING_BATCH = 50
 
 def _upsert(rows: list[tuple]) -> None:
     """rows: (os_family, package, version, cve_id, fixed_version,
-    distro_severity, source)"""
+    distro_severity, title, source)"""
     if not rows:
         return
     connection = get_connection()
@@ -32,15 +32,16 @@ def _upsert(rows: list[tuple]) -> None:
                     """
                     INSERT INTO package_cves (
                         os_family, package, version, cve_id,
-                        fixed_version, distro_severity, source, updated_at
+                        fixed_version, distro_severity, title, source, updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
                     ON CONFLICT (os_family, package, cve_id) DO UPDATE SET
                         version = EXCLUDED.version,
                         fixed_version = COALESCE(EXCLUDED.fixed_version,
                                                  package_cves.fixed_version),
                         distro_severity = COALESCE(EXCLUDED.distro_severity,
                                                    package_cves.distro_severity),
+                        title = COALESCE(EXCLUDED.title, package_cves.title),
                         source = EXCLUDED.source,
                         updated_at = NOW()
                     """,
@@ -71,6 +72,7 @@ def refresh_for_discovery(discovery: dict) -> int:
                         entry["cve_id"],
                         entry["fixed_version"],
                         entry["distro_severity"],
+                        None,
                         "updateinfo",
                     )
                 )
@@ -79,10 +81,10 @@ def refresh_for_discovery(discovery: dict) -> int:
             mapping = ubuntu.map_packages(packages)
             versions = {p["name"]: p.get("current_version") for p in packages}
             for package, cves in mapping.items():
-                for cve_id in cves:
+                for cve_id, info in cves.items():
                     rows.append(
-                        ("Debian", package, versions.get(package),
-                         cve_id, None, None, "osv")
+                        ("Debian", package, versions.get(package), cve_id,
+                         None, info.get("severity"), info.get("title"), "osv")
                     )
 
         _upsert(rows)
@@ -151,9 +153,10 @@ def refresh_missing(limit: int = MISSING_BATCH) -> int:
     versions = dict(todo)
 
     rows = [
-        ("Debian", package, versions.get(package), cve_id, None, None, "osv")
+        ("Debian", package, versions.get(package), cve_id,
+         None, info.get("severity"), info.get("title"), "osv")
         for package, cves in mapping.items()
-        for cve_id in cves
+        for cve_id, info in cves.items()
     ]
     _upsert(rows)
     _mark_checked([name for name, _ in todo])
