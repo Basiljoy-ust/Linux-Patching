@@ -88,7 +88,7 @@
 
     - name: Preflight - check dnf-utils (needs-restarting) is installed
       ansible.builtin.command:
-        cmd: rpm -q dnf-utils
+        cmd: rpm -q --whatprovides /usr/bin/needs-restarting
       register: rhel_dnf_utils
       changed_when: false
       failed_when: false
